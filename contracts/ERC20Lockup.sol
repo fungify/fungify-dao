@@ -167,6 +167,9 @@ abstract contract ERC20Lockup is
     {
         super._beforeTokenTransfer(from, to, amount);
 
+        // This is a mint, and so lockups do not apply.
+        if ( from == address(0) ) return;
+
         // If this transfer was already going to fail, see if we can salvage it by freeing any stale locks.
         if ( !( amount <= balanceOfUnlocked(from) ) )
         {
@@ -198,5 +201,22 @@ abstract contract ERC20Lockup is
     returns (uint256)
     {
         return (balanceOf(_account) - totalLockedTokens[_account]);
+    }
+
+    /**
+     * @dev This function returns the array of lockup entries for a given address.
+     *
+     * @param _account The address for which the lockups are being queried.
+     *
+     * @return The array of lockup entries.
+     */
+    function getLockEntries(
+        address _account
+    )
+    public
+    view
+    returns (TokenLock[] memory)
+    {
+        return locksPerWallet[_account].locks;
     }
 }

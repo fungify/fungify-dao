@@ -31,7 +31,8 @@ contract FungifyProtocolGovernor is
     }
 
     function proposalThreshold() public pure override returns (uint256) {
-        return 0;
+        // 0.5% of total token supply.
+        return (1_000_000_000 / 200) * 10e18;
     }
 
     // The functions below are overrides required by Solidity.

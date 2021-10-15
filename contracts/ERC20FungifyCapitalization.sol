@@ -5,6 +5,7 @@ import "@openzeppelin/contracts/utils/Context.sol";
 import "@openzeppelin/contracts/access/AccessControlEnumerable.sol";
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/interfaces/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "./ERC20Lockup.sol";
 
 abstract contract ERC20FungifyCapitalization is
@@ -13,6 +14,8 @@ abstract contract ERC20FungifyCapitalization is
     ERC20,
     ERC20Lockup
 {
+
+    using SafeERC20 for IERC20;
 
     //
     // Events
@@ -58,15 +61,12 @@ abstract contract ERC20FungifyCapitalization is
     address public treasuryAddress;
 
     // Tracking whether the capitalization component has been initialized, and the minting has been done.
-    bool private capitalizationInitialized = false;
+    bool public capitalizationInitialized = false;
 
     /* Capitalization payout ratio */
 
-    // A valuation, denominated in USD, used to determine token distribution during capitalization.
-    uint256 private capitalizationValue;
-
-    // The number of tokens per USDC during capitalization.
-    uint256 private tokensPerUsdc;
+    // A valuation, denominated in USDC, used to determine token distribution during capitalization.
+    uint256 public capitalizationValue;
 
     /* Capitalization allocation list */
 
@@ -139,10 +139,11 @@ abstract contract ERC20FungifyCapitalization is
      * @dev This function does the initial setup for capitalization, including minting the fixed supply, distributing
      * the team, and granting the team the allocator role for managing the allocation list.
      *
-     * @param _capitalizationValue The initial valuation, in USD, to be used for capitalization.
+     * @param _capitalizationValue The initial valuation, in USDC, to be used for capitalization.
      * @param _teamMembers An array of team wallet addresses.
      * @param _teamPortions An array of percentages for each team member, dividing the 25% team portion of the total
-     * token supply.  E.g. a portion of uint256(25) corresponds to that team member getting 25% of 25% of the tokens.
+     * token supply.  These are expressed as tenths of a percent, e.g. a portion of uint256(250) corresponds to that
+     * team member getting 25% of 25% of the tokens.
      *
      * Requirements:
      *
@@ -190,6 +191,7 @@ abstract contract ERC20FungifyCapitalization is
                 _teamPortions[i]
             );
 
+            // All team members are granted the allocator role for the initial raise.
             grantRole(
                 ALLOCATOR_ROLE,
                 _teamMembers[i]
@@ -203,7 +205,7 @@ abstract contract ERC20FungifyCapitalization is
      * @dev This function does the distribution of tokens to team members, and sets the vesting schedule.
      *
      * @param _toAddress The team member wallet address.
-     * @param _portion The percentage of the team portion given to this team member.
+     * @param _portion The percentage of the team portion given to this team member, expressed as tenths of a percent.
      */
     function _teamDistribution(
         address _toAddress,
@@ -212,7 +214,7 @@ abstract contract ERC20FungifyCapitalization is
     internal
     {
         // This is 25% * portion% * token supply, adjusted for uint math.
-        uint256 tokenAmount = ( _portion * TOTAL_TOKEN_SUPPLY ) / ( 4 * 100 );
+        uint256 tokenAmount = ( _portion * TOTAL_TOKEN_SUPPLY ) / ( 4 * 1000 );
 
         // Send tokens from treasury to team member.
         _transfer(
@@ -238,7 +240,7 @@ abstract contract ERC20FungifyCapitalization is
     /**
      * @dev This function allows allocators to reset the capitalization value.
      *
-     * @param _capitalizationValue The valuation, in USD, to be used for capitalization.
+     * @param _capitalizationValue The valuation, in USDC, to be used for capitalization.
      *
      * Requirements:
      *
@@ -272,7 +274,7 @@ abstract contract ERC20FungifyCapitalization is
         address _toAddress,
         uint256 _usdcQuota
     )
-    external
+    public
     onlyRole(ALLOCATOR_ROLE)
     {
         require(
@@ -300,6 +302,56 @@ abstract contract ERC20FungifyCapitalization is
     }
 
     /**
+     * @dev This function sets the data for multiple allocation list entries, either creating or updating the entries.
+     *
+     * @param _fromAddresses The addresses which will be sending the USDC.
+     * @param _toAddresses The addresses to which the tokens should be distributed.
+     * @param _usdcQuotas The amount of USDC that may be redeemed for tokens by `_toAddresses`.
+     *
+     * Requirements:
+     *
+     * - Must be called by an allocator.
+     * - Array lengths must be non-zero.
+     * - Array lengths must match.
+     */
+    function setAllocationBatch(
+        address[] memory _fromAddresses,
+        address[] memory _toAddresses,
+        uint256[] memory _usdcQuotas
+    )
+    external
+    onlyRole(ALLOCATOR_ROLE)
+    {
+        uint256 batchLength = _fromAddresses.length;
+
+        require(
+            batchLength != 0,
+            "Zero batch length"
+        );
+
+        require(
+            _toAddresses.length == batchLength,
+            "Batch length mismatch"
+        );
+
+        require(
+            _usdcQuotas.length == batchLength,
+            "Batch length mismatch"
+        );
+
+        for ( uint256 i = 0; i < batchLength; i++ )
+        {
+            setAllocation(
+                _fromAddresses[i],
+                _toAddresses[i],
+                _usdcQuotas[i]
+            );
+        }
+    }
+
+    // TODO: Add mass allocation function.
+
+    /**
      * @dev This function deletes an allocation from the allocation list.
      *
      * @param _fromAddress The address for which the allocation list entry should be deleted.
@@ -321,7 +373,7 @@ abstract contract ERC20FungifyCapitalization is
         emit AllocationSet(
             _fromAddress,
             alloc.toAddress,
-            alloc.usdcQuota
+            0
         );
     }
 
@@ -332,6 +384,8 @@ abstract contract ERC20FungifyCapitalization is
      *
      * @param _usdcAmount The amount of USDC being deposited.
      * @param _termsAgreement This must be set to 0xACC in order to indicate acceptance of the terms and conditions.
+     *
+     * Terms & Conditions: ipfs://QmfAKFbB2C13MgoLUbJQTbXpG4NkxquckCuWPGYUqSgAdt
      *
      * Requirements:
      *
@@ -355,7 +409,7 @@ abstract contract ERC20FungifyCapitalization is
             "Not enough USDC quota"
         );
 
-        USDC.transferFrom(
+        USDC.safeTransferFrom(
             _msgSender(),
             treasuryAddress,
             _usdcAmount
@@ -386,7 +440,7 @@ abstract contract ERC20FungifyCapitalization is
     }
 
     //
-    // Public views
+    // Views
     //
 
     /**
